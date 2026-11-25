@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Streamer</title>
+<style>
+  :root{--bg:#0d0d0f;--fg:#eee;--dim:#888;--acc:#4ade80}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+  header{display:flex;gap:8px;padding:12px;position:sticky;top:0;background:#0d0d0fee;
+         backdrop-filter:blur(8px);border-bottom:1px solid #222;z-index:5}
+  input,select,button{font:inherit;background:#1a1a1e;color:var(--fg);border:1px solid #333;
+        border-radius:8px;padding:10px 12px}
+  input[type=search]{flex:1}
+  button{cursor:pointer}
+  button:hover{border-color:var(--acc);color:var(--acc)}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;padding:12px}
+  .card{cursor:pointer}
+  .card img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#1a1a1e}
+  .card:hover img{outline:2px solid var(--acc)}
+  .card span{display:block;font-size:12px;color:var(--dim);margin-top:4px}
+  .card b{font-weight:600;font-size:13px}
+  #view{display:none}
+  #bar{display:flex;gap:8px;padding:12px;flex-wrap:wrap;align-items:center}
+  iframe{width:100%;height:min(72vh,600px);border:0;background:#000;display:block}
+  #hint{padding:12px;color:var(--dim);font-size:13px}
+  #hint a{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <input id="q" type="search" placeholder="Search a movie or show…" autocomplete="off">
+  <button id="back" hidden>←</button>
+</header>
+
+<div id="hint">
+  <p>Paste your free <a href="https://www.themoviedb.org/settings/api" target="_blank">TMDB API key</a>:</p>
+  <input id="key" style="width:100%" placeholder="TMDB API key (v3)">
+</div>
+
+<div id="grid"></div>
+
+<div id="view">
+  <div id="bar">
+    <strong id="title" style="flex:1;min-width:180px"></strong>
+    <select id="season" hidden></select>
+    <select id="episode" hidden></select>
+    <select id="src"></select>
+    <button id="tab">Open ↗</button>
+  </div>
+  <iframe id="frame" allow="autoplay; fullscreen; encrypted-media" allowfullscreen
+          referrerpolicy="origin"></iframe>
+</div>
+
+<script>
+const KEY = () => localStorage.tmdbKey || '';
+document.getElementById('key').value = KEY();
+document.getElementById('key').oninput = e => localStorage.tmdbKey = e.target.value.trim();
+
+/* ---- Provider table: {movie, tv} build the URL from a TMDB id ---- */
+const SOURCES = [
+  { n:'VidLink',   m:t=>`https://vidlink.pro/movie/${t}`,           tv:(t,s,e)=>`https://vidlink.pro/tv/${t}/${s}/${e}` },
+  { n:'vidsrc.to', m:t=>`https://vidsrc.to/embed/movie/${t}`,        tv:(t,s,e)=>`https://vidsrc.to/embed/tv/${t}/${s}/${e}` },
+  { n:'embed.su',  m:t=>`https://embed.su/embed/movie/${t}`,         tv:(t,s,e)=>`https://embed.su/embed/tv/${t}/${s}/${e}` },
+  { n:'moviesapi', m:t=>`https://moviesapi.club/movie/${t}`,         tv:(t,s,e)=>`https://moviesapi.club/tv/${t}-${s}-${e}` },
+  { n:'autoembed', m:t=>`https://autoembed.cc/embed/movie/${t}`,     tv:(t,s,e)=>`https://autoembed.cc/embed/tv/${t}/${s}/${e}` },
+  { n:'2embed',    m:t=>`https://www.2embed.cc/embed/${t}`,          tv:(t,s,e)=>`https://www.2embed.cc/embedtv/${t}&s=${s}&e=${e}` },
+  { n:'smashy',    m:t=>`https://player.smashy.stream/movie/${t}`,   tv:(t,s,e)=>`https://player.smashy.stream/tv/${t}?s=${s}&e=${e}` },
+  { n:'vidsrc.xyz',m:t=>`https://vidsrc.xyz/embed/movie?tmdb=${t}`,  tv:(t,s,e)=>`https://vidsrc.xyz/embed/tv?tmdb=${t}&season=${s}&episode=${e}` },
+];
+
+const $ = id => document.getElementById(id);
+const grid = $('grid'), view = $('view'), frame = $('frame');
+let current = null;               // { id, type, title, seasons }
+
+/* ---------------- search ---------------- */
+let timer;
+$('q').oninput = () => {
+  clearTimeout(timer);
+  const q = $('q').value.trim();
+  if (!q) return;
+  if (!KEY()) return alert('Add a TMDB API key first.');
+  timer = setTimeout(() => search(q), 350);
+};
+
+async function search(q) {
+  const r = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${KEY()}&query=${encodeURIComponent(q)}`);
+  const d = await r.json();
+  grid.innerHTML = '';
+  (d.results || [])
+    .filter(x => x.media_type === 'movie' || x.media_type === 'tv')
+    .slice(0, 40)
+    .forEach(x => {
+      const c = document.createElement('div');
+      c.className = 'card';
+      const date = (x.release_date || x.first_air_date || '').slice(0, 4);
+      c.innerHTML = `<img loading="lazy" src="${x.poster_path ? 'https://image.tmdb.org/t/p/w342' + x.poster_path : ''}" alt="">
+        <b>${esc(x.title || x.name)}</b><span>${date} · ${x.media_type}</span>`;
+      c.onclick = () => open(x);
+      grid.append(c);
+    });
+  view.style.display = 'none';
+  $('back').hidden = true;
+}
+
+const esc = s => (s || '').replace(/[<>&]/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]));
+
+/* ---------------- player ---------------- */
+async function open(item) {
+  current = {
+    id: item.id,
+    type: item.media_type,
+    title: item.title || item.name,
+    season: 1,
+    episode: 1,
+    seasons: 1,
+  };
+
+  $('title').textContent = current.title;
+  grid.innerHTML = '';
+  view.style.display = 'block';
+  $('back').hidden = false;
+
+  $('src').innerHTML = SOURCES.map((s, i) => `<option value="${i}">${s.n}</option>`).join('');
+
+  if (current.type === 'tv') {
+    const r = await fetch(`https://api.themoviedb.org/3/tv/${current.id}?api_key=${KEY()}`);
+    const d = await r.json();
+    current.seasons = d.number_of_seasons || 1;
+    $('season').hidden = $('episode').hidden = false;
+    $('season').innerHTML = Array.from({length: current.seasons},
+      (_, i) => `<option value="${i + 1}">S${i + 1}</option>`).join('');
+    fillEpisodes(1);
+  } else {
+    $('season').hidden = $('episode').hidden = true;
+  }
+  play();
+}
+
+function fillEpisodes(season) {
+  $('episode').innerHTML = Array.from({length: 30},
+    (_, i) => `<option value="${i + 1}">E${i + 1}</option>`).join('');
+}
+
+function buildUrl() {
+  const s = SOURCES[+$('src').value];
+  return current.type === 'tv'
+    ? s.tv(current.id, $('season').value || 1, $('episode').value || 1)
+    : s.m(current.id);
+}
+
+function play() {
+  const url = buildUrl();
+  frame.src = url;
+  $('tab').onclick = () => window.open(url, '_blank', 'noopener');
+}
+
+$('src').onchange = play;
+$('season').onchange = () => { fillEpisodes($('season').value); play(); };
+$('episode').onchange = play;
+$('back').onclick = () => {
+  frame.src = 'about:blank';
+  view.style.display = 'none';
+  $('back').hidden = true;
+  $('q').focus();
+};
+</script>
+</body>
+</html>
